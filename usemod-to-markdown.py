@@ -9,7 +9,7 @@ TODO:
 * '''text'''
 * <nowiki>
 * <pre> blocks?
-* better cmd line synta?
+* better cmd line syntax?
 
 """
 
