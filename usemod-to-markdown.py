@@ -59,7 +59,6 @@ def convert_page_file(file, output_dir):
     #print contents
 
     page = usemod_data_to_dictionary(contents, FS1)
-    revision = int(page['revision'])
 
     output_file, title = usemod_filename_to_output_filename_and_title(file)
 
@@ -75,8 +74,7 @@ def convert_page_file(file, output_dir):
 
     write_post(output_dir, output_file, title, dt, category, text)
 
-    print(' wrote revision', revision)
-    print(' timestamp:', timestamp, ' date:', dt.isoformat().replace('T', ' '), '\n')
+    #print(' timestamp:', timestamp, ' date:', dt.isoformat().replace('T', ' '), '\n')
 
 def usemod_data_to_dictionary(buf, fs):
     s = buf.split(fs)
@@ -133,16 +131,60 @@ def usemod_to_markdown(input_txt):
     text = ''
     refnum = 0 # Counter for numbered reference links.
 
+
+    # Monospaced text
+    #
+    # UseMod is triggered by a single space and preserves the rest.
+    # Markdown requires four spaces (or a tab).
+    input_txt = re.sub(r'^ (.*)$', r'    \1', input_txt, flags=re.MULTILINE)
+
+    # List start fix
+    #
+    # Markdown best practice requires a blank line before a list.
+    input_txt = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', input_txt, flags=re.MULTILINE)
+
+    # List depth error fix
+    #
+    # UseMod allows a list to start at a level higher than one. In Markdown,
+    # the indentation used to indicate level gets misinterpreted.
+    # Too hard to fix.
+
+    # Adjacent lists fix
+    #
+    # UseMod allows a blank line to separate two similar lists. Markdown weirdly
+    # interprets this as a single "loose" list, where every list item gets
+    # wrapped as a paragraph, making the list spacing weird.
+    #
+    # For bullet lists, this can be fixed by causing a line break without an
+    # empty line. Standard Markdown to fix for this is two spaces at the end of
+    # the last item to indicate a line break, but that's impossible to edit.
+    # Most processors will accept HTML <br>, but you need two of them to
+    # introduce the separator between lists.
+    #
+    # For numbered lists, the problem cannot be fixed. There is no way to get
+    # Markdown to restart numbering for the second list, it treats them as one.
+    input_txt = re.sub(r'^(\*[^\n]*)\n\s*\n\*', r'\1\n<br><br>\n*', input_txt, flags=re.MULTILINE)
+    if re.search(r'^\#[^\n]*(\n\s*)+\n\#', input_txt, flags=re.MULTILINE):
+        print(f'WARNING: Page contains adjacent numbered lists separated by blank lines which will misbehave in Markdown.')
+
+    # Emphasis
+    #
+    # UseMod's ''text'' => Markdown's *text* (italics)
+    # UseMod's '''text''' => Markdown's **text** (bold)
+    #
+    # Luckily, both forms compose.
+    input_txt = re.sub(r"'''([^'\n]+?)'''", r'**\1**', input_txt, re.MULTILINE)
+    input_txt = re.sub(r"''([^'\n]+?)''", r'*\1*', input_txt, re.MULTILINE)
+    #
+    # UseMod also supports HTML-style bolding and italicizing
+    input_txt = re.sub(r"<i>([^'\n]+?)</i>", r'*\1*', input_txt, re.MULTILINE)
+    input_txt = re.sub(r"<b>([^'\n]+?)</b>", r'**\1**', input_txt, re.MULTILINE)
+
+
     for line in input_txt.splitlines():
 
         if debug_format:
             print (f'<{line}')
-
-        # Monospaced text
-        #
-        # UseMod is triggered by a single space and preserved the rest.
-        # Markdown requires four spaces (or a tab).
-        line = re.sub(r'^ (.*)$', r'    \1', line)
 
         # simple lists and indented text
         #
@@ -208,7 +250,7 @@ def usemod_to_markdown(input_txt):
             desc = m.group(3)
             title = m.group(1)
             if desc is None: desc = title
-            fname = title.replace(' ', '_')
+            fname = canonicalize_page_name(title)
             return f'[{desc}]({fname})'
         line = re.sub(r'\[\[(.*?)(\s+\|\s+(.*?))?\]\]', transform_free_link, line)
 
@@ -234,19 +276,14 @@ def usemod_to_markdown(input_txt):
         # because it would also match the inside of internal links.
         #line = re.sub(r'(\s|^)([A-Z][a-z]+[A-Z]+[a-z].*?)(\s|$)', r'\1[\2](\2.html)\3', line)
 
-        #HTML-style breaks (using two end spaces, not a backslash)
-        # Other non-standard possibilities are <br> or backslash
-        line = re.sub(r'(?i)\s*<br\s*/?>\s*$', r'  ', line)
-
         if debug_format:
             print (f'>{line}')
         text += line + '\n'
 
-    #fix lists that don't have required blank line above
-
-    text = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', text, flags=re.MULTILINE)
-
     return text
+
+def canonicalize_page_name(title):
+    return '_'.join(map(str.capitalize, title.split()))
 
 def print_usage():
     print('Usage:')
