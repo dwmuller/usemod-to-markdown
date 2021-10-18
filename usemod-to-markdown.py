@@ -55,7 +55,7 @@ def initialize_intermap(input_dir):
 
 def convert_page_file(file, output_dir):
     print (f'processing page file {file}')
-    contents = open(file).read()
+    contents = open(file, encoding='cp1252').read()
     #print contents
 
     page = usemod_data_to_dictionary(contents, FS1)
@@ -102,7 +102,7 @@ def write_post(output_dir, output_file, title, dt, category, txt):
     filename = join(output_dir, output_file)
     frontmatter = {'layout': 'post',
                    'title': title,
-                   'date': dt.isoformat().replace('T', ' ')
+                   'date': dt.isoformat()
                   }
 
     if category is not None:
@@ -209,7 +209,7 @@ def usemod_to_markdown(input_txt):
             title = m.group(1)
             if desc is None: desc = title
             fname = title.replace(' ', '_')
-            return f'[{desc}]({fname}.html)'
+            return f'[{desc}]({fname})'
         line = re.sub(r'\[\[(.*?)(\s+\|\s+(.*?))?\]\]', transform_free_link, line)
 
         # Named URL links
