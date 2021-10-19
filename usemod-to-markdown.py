@@ -4,9 +4,9 @@
 Converts UseMod wiki pages to markdown files .
 
 TODO: 
-* Sub-pages
-* Front matter, one I know what I want.
-* '''text'''
+* Front matter, once I know what I want.
+* page base URL should be a command line option, default to empty
+* trailing slash on page URLs should be optional
 * <nowiki>
 * <pre> blocks?
 * better cmd line syntax?
@@ -30,18 +30,38 @@ FS1 = FS + "1"
 FS2 = FS + "2"
 FS3 = FS + "3"
 
-# Globals
+# Global data
 intermap = {}
 intermap_prefix = ''
+base_url='/household/wiki/'
+
+# options
 debug_format = False
+
+# UseMod wiki options borrowed from the Perl code
+UseSubPage = True
+UpperFirst = True
+FreeUpper = True
+UpperFirst = True
 
 def usemod_pages_to_markdown_files(input_dir, output_dir):
 
     initialize_intermap(input_dir)
 
-    for root, _, files in os.walk(join(input_dir, 'page')):
-        for file in files:
-            convert_page_file(join(root, file), output_dir)
+    for letter_dir in os.scandir(join(input_dir, 'page')):
+        if letter_dir.is_dir():
+            for page_item in os.scandir(letter_dir):
+                if page_item.is_file():
+                    convert_page_file(page_item.path, output_dir)
+                elif page_item.is_dir() & UseSubPage:
+                    for subpage_item in os.scandir(page_item):
+                        subpage_output_dir = join(output_dir, page_item.name)
+                        os.makedirs(subpage_output_dir, exist_ok=True)
+                        convert_page_file(subpage_item.path, subpage_output_dir)
+
+    # for root, _, files in os.walk(join(input_dir, 'page')):
+    #     for file in files:
+    #         convert_page_file(join(root, file), output_dir)
 
 def initialize_intermap(input_dir):
     global intermap
@@ -54,7 +74,7 @@ def initialize_intermap(input_dir):
     intermap_prefix = f'(P<intermap_key>{"|".join(intermap)}):'
 
 def convert_page_file(file, output_dir):
-    print (f'processing page file {file}')
+    print (f'Converting file {file} to dir {output_dir}')
     contents = open(file, encoding='cp1252').read()
     #print contents
 
@@ -112,10 +132,10 @@ def write_post(output_dir, output_file, title, dt, category, txt):
     yaml.dump(frontmatter, f, default_flow_style=False)
     f.write('---\n\n')
 
-    f.write(usemod_to_markdown(txt))
+    f.write(usemod_to_markdown(txt, title))
     f.close()
 
-def usemod_to_markdown(input_txt):
+def usemod_to_markdown(input_txt, title):
 
     # For UseMod constructs, see:
     # - http://www.usemod.com/cgi-bin/wiki.pl?TextFormattingExamples
@@ -246,12 +266,19 @@ def usemod_to_markdown(input_txt):
 
         # Free links
         def transform_free_link(m):
-            if debug_format: print(f' !free_link')
+            # We generate links using a site-wide prefix, and trailing slashes.
+            # TODO: Make trailing slashes optional.
             desc = m.group(3)
-            title = m.group(1)
-            if desc is None: desc = title
-            fname = canonicalize_page_name(title)
-            return f'[{desc}]({fname})'
+            reftitle = m.group(1)
+            if desc is None: desc = reftitle
+            if reftitle.startswith('/') and UseSubPage:
+                fname = free_to_normal(reftitle[1:])
+                if debug_format: print(f' !free_link(subpage)')
+                return f'[{desc}]({base_url}{title}/{fname}/)'
+            else:
+                fname = free_to_normal(reftitle)
+                if debug_format: print(f' !free_link')
+                return f'[{desc}]({base_url}{fname}/)'
         line = re.sub(r'\[\[(.*?)(\s+\|\s+(.*?))?\]\]', transform_free_link, line)
 
         # Named URL links
@@ -282,8 +309,20 @@ def usemod_to_markdown(input_txt):
 
     return text
 
-def canonicalize_page_name(title):
-    return '_'.join(map(str.capitalize, title.split()))
+def free_to_normal(title):
+    # Capitalize letters after certain chars.
+    # Had to dig into the Perl code to find the right approach for this!
+    title = re.sub(' ','_',title)
+    if UpperFirst or FreeUpper: title = title[0:1].capitalize() + title[1:] 
+    title = re.sub('__+', '_', title)
+    title = re.sub('^_','', title)
+    title = re.sub('_$', '', title)
+    if (UseSubPage):
+        title = re.sub('_/', '/', title)
+        title = re.sub('/_', '/', title)
+    if FreeUpper:
+        title = re.sub(r'([-_.,\(\)/])([a-z])', lambda m: m.group(1) + m.group(2).capitalize(), title)
+    return title
 
 def print_usage():
     print('Usage:')
