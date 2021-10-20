@@ -10,6 +10,7 @@ TODO:
 * <nowiki>
 * <pre> blocks?
 * better cmd line syntax?
+* read UseMod config file?
 
 """
 
@@ -38,11 +39,9 @@ base_url='/household/wiki/'
 # options
 debug_format = False
 
-# UseMod wiki options borrowed from the Perl code
+# Selected UseMod wiki config options.
 UseSubPage = True
-UpperFirst = True
 FreeUpper = True
-UpperFirst = True
 
 def usemod_pages_to_markdown_files(input_dir, output_dir):
 
@@ -313,7 +312,7 @@ def free_to_normal(title):
     # Capitalize letters after certain chars.
     # Had to dig into the Perl code to find the right approach for this!
     title = re.sub(' ','_',title)
-    if UpperFirst or FreeUpper: title = title[0:1].capitalize() + title[1:] 
+    title = title[0:1].capitalize() + title[1:] 
     title = re.sub('__+', '_', title)
     title = re.sub('^_','', title)
     title = re.sub('_$', '', title)
