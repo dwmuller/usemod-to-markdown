@@ -133,63 +133,61 @@ def write_post(out_fh, title, dt, txt):
 
 # Pattern helpers
 
-# Tags allowed if HtmlTags is true. Not particularly safe.
-#
-# Target Markdown may or may not support these.
-#
-# Tags which have Markdown equivalents have been removed.
-htmlSingle = ['br', 'p', 'hr', 'li', 'dt', 'dd', 'tr', 'td', 'th']
-htmlSingleExpr = re.compile(rf'&lt;({"|".join(htmlSingle)})(\s.*?)?/?&gt;')
-htmlPairs = ['b', 'i', 'u', 'font', 'big', 'small', 'sub', 'sup', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'cite', 'code',
-    'em', 's', 'strike', 'strong', 'tt', 'var', 'div', 'center', 'blockquote', 'ol', 'ul', 'dl', 'table', 'caption'] + htmlSingle
-htmlPairExpr = re.compile(rf'&lt;({"|".join(htmlPairs)})(\s.*?)&gt;(.*?)&lt;/\1%gt;')
+### Regular expression pattern fragments, mostly initialized dynamically:
 
-# Tags allowed always:
-htmlTrivial = ['b', 'i', 'strong', 'em']
-htmlTrivialExpr = re.compile(rf'&lt;({"|".join(htmlTrivial)})(\s.*?)&gt;(.*?)&lt;/\1%gt;')
+## Tags allowed if HtmlTags is true. Not particularly safe.
+html_single_pattern = 'br|p|hr|li|dt|dd|tr|td|th'
+html_pairs_pattern = html_single_pattern + 'b|i|u|font|big|small|sub|sup|h1|h2|h3|h4|h5|h6|cite|code|em|s|strike|strong|tt|var|div|center|blockquote|ol|ul|dl|table|caption'
+
+## Link patterns
+free_link_pattern = None
+link_pattern = None
+url_pattern = None
+inter_link_pattern = None
+anchored_link_pattern = None
 
 # Set up link patterns, which can vary based on options.
 def init_link_patterns():
-    global freeLinkPattern
-    global linkPattern
-    global urlPattern
-    global interLinkPattern
-    global anchoredLinkPattern
+    global free_link_pattern
+    global link_pattern
+    global url_pattern
+    global inter_link_pattern
+    global anchored_link_pattern
 
-    upperLetter = '[A-Z]'
-    lowerLetter = '[a-z]'
-    anyLetter = '[A-Za-z' + (']' if SimpleLinks else '_0-9]')
+    upper_letter = '[A-Z]'
+    lower_letter = '[a-z]'
+    any_letter = '[A-Za-z' + (']' if SimpleLinks else '_0-9]')
     # Main link pattern: lower between upper, then anything
-    LpA = f'{upperLetter}+{lowerLetter}+{upperLetter}{anyLetter}*'
+    page_name = f'{upper_letter}+{lower_letter}+{upper_letter}{any_letter}*'
     # Optional subpage link pattern: upper, lower, then anything
-    LpB = f'{upperLetter}+{lowerLetter}+{anyLetter}*'
+    subpage_name = f'{upper_letter}+{lower_letter}+{any_letter}*'
     if UseSubpage:
         # Loose pattern: If subpage , it may be simple
-        linkPattern = fr"((?:(?:{LpA})?\\/{LpB})|{LpA})"
+        link_pattern = fr"((?:(?:{page_name})?\\/{subpage_name})|{page_name})"
     else:
-        linkPattern = f'{LpA}'
-    qDelim = '(?:"")?' # Optional quote delimiter - have never seen this used.
-    anchoredLinkPattern = fr'{linkPattern}#(\w+){qDelim}'
-    linkPattern = linkPattern + qDelim
-    interSitePattern = f'{upperLetter}{anyLetter}+'
-    interLinkPattern = fr'((?:{interSitePattern}:[^\]\s"<>{FS}]+){qDelim})'
+        link_pattern = f'{page_name}'
+    quote_delim = '(?:"")?' # Optional quote delimiter - have never seen this used.
+    anchored_link_pattern = fr'{link_pattern}#(\w+){quote_delim}'
+    link_pattern = link_pattern + quote_delim
+    inter_site_pattern = f'{upper_letter}{any_letter}+'
+    inter_link_pattern = fr'((?:{inter_site_pattern}:[^\]\s"<>{FS}]+){quote_delim})'
     if FreeLinks:
-        anyLetter = "[-,.()' _0-9A-Za-z]"
+        any_letter = "[-,.()' _0-9A-Za-z]"
     if UseSubpage:
-        freeLinkPattern = fr'((?:(?:{anyLetter}+)?/)?{anyLetter}+){qDelim}'
+        free_link_pattern = fr'((?:(?:{any_letter}+)?/)?{any_letter}+){quote_delim}'
     else:
-        freeLinkPattern = fr'({anyLetter}+){qDelim}'
-    urlProtocols = 'https?|ftp|afs|news|nntp|mid|cid|mailto|wais|prospero|telnet|gopher'
+        free_link_pattern = fr'({any_letter}+){quote_delim}'
+    url_protocols = 'https?|ftp|afs|news|nntp|mid|cid|mailto|wais|prospero|telnet|gopher'
     if NetworkFile:
-        urlProtocols = urlProtocols + '|file'
-    urlPattern = rf'((?:(?:{urlProtocols}):[^\]\s"<>{FS}]+){qDelim})'
-    imageExtensions = '(gif|jpg|png|bmp|jpeg)'
-    rfcPattern = r'RFC\s?(\d+)'
-    isbnPattern = r'ISBN:?([0-9- xX]{`0,})'
-    uploadPattern = rf'upload:([^\]\s"<>{FS}]+){qDelim}'
+        url_protocols = url_protocols + '|file'
+    url_pattern = rf'((?:(?:{url_protocols}):[^\]\s"<>{FS}]+){quote_delim})'
+    image_extensions = '(gif|jpg|png|bmp|jpeg)'
+    rfc_pattern = r'RFC\s?(\d+)'
+    isbn_pattern = r'ISBN:?([0-9- xX]{`0,})'
+    upload_pattern = rf'upload:([^\]\s"<>{FS}]+){quote_delim}'
 
 
-def usemod_page_to_markdown(page_text, page_id, parent_id):
+def usemod_page_to_markdown(text, page_id, parent_id):
 
     # For UseMod constructs, see:
     # - http://www.usemod.com/cgi-bin/wiki.pl?TextFormattingExamples
@@ -209,7 +207,6 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     # named anchors (<a name=''>)
     # <tt>
 
-    text = ''
     last_bracket_url_index = 0 # Counter for numbered reference links.
     indexed_bracket_urls = {}
 
@@ -272,8 +269,8 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
             link_text = get_bracket_url_index(url)
         return store_raw(f'[{link_text}]({url})')
     def store_bracket_interlink(id, link_text = None):
-        site, remotePage = id.split(':',1)
-        remotePage = remotePage.replace('&amp;','&')
+        site, remote_page = id.split(':',1)
+        remote_page = remote_page.replace('&amp;','&')
         url = intermap.get(site)
         if link_text is None:
             if url is None:
@@ -281,7 +278,7 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
             link_text = get_bracket_url_index(id)
         elif url is None:
             return f'[{id} {link_text}]'
-        url = url + remotePage;
+        url = url + remote_page;
         link_text = f'[{link_text}]'
         return store_raw(f'[{link_text}]({url})')
     def store_bracket_link(page, link_text):
@@ -346,10 +343,10 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
         def transform_raw(m):
             if debug_format: print(f'!raw')
             return store_raw(m.group(1))
-        page_text = re.sub(r'<html>((.|\n)*?)</html>', transform_raw, page_text)
+        text = re.sub(r'<html>((.|\n)*?)</html>', transform_raw, text)
 
     # Quote HTML
-    page_text = quote_html(page_text)
+    text = quote_html(text)
 
     # (Begin of first invocation of CommonMarkup.)
 
@@ -357,7 +354,7 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     def transform_nowiki(m):
         if debug_format: print(f'!nowiki')
         return store_raw(m.group(1))
-    page_text = re.sub(r'&lt;nowiki&gt;((.|\n)*?)&lt;/nowiki&gt;', transform_nowiki, page_text)
+    text = re.sub(r'&lt;nowiki&gt;((.|\n)*?)&lt;/nowiki&gt;', transform_nowiki, text)
 
     # <pre>, <code> blocks
     def transform_pre(m):
@@ -365,14 +362,15 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
         txt = m.group(2)
         if debug_format: print(f'!pre({tag})')
         return store_pre(txt,tag)
-    page_text = re.sub(r'&lt;(pre|code)&gt;((.|\n)*?)&lt;/\1&gt;', transform_pre, page_text)
+    text = re.sub(r'&lt;(pre|code)&gt;((.|\n)*?)&lt;/\1&gt;', transform_pre, text)
 
     # Now translate allowed HTML tags back to unquoted HTML.
     if HtmlTags:
-        page_text = re.sub(htmlPairExpr, r'<\1\2>\3</\1>', page_text)
-        page_text = re.sub(htmlSingleExpr, r'<\1\2>', page_text)
+        text = re.sub(rf'&lt;({html_pairs_pattern})(\s.*?)&gt;(.*?)&lt;/\1%gt;', r'<\1\2>\3</\1>', text)
+        text = re.sub(rf'&lt;({html_single_pattern})(\s.*?)?/?&gt;', r'<\1\2>', text)
     else:
-        page_text = re.sub(htmlTrivialExpr, r'<\1\2>', page_text)
+        # These markup tags are always supported:
+        text = re.sub(f'(b|i|strong|em)(\s.*?)&gt;(.*?)&lt;/\1%gt;', r'<\1\2>', text)
 
     # Not implemented here: <tt>
 
@@ -380,35 +378,35 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     #
     # Standard Markdown uses two trailing spaces, which is nuts.
     # Most processors accept HTML-style breaks.
-    page_text = re.sub(r'&lt;br\s*/?&gt;', r'<br>', page_text)
+    text = re.sub(r'&lt;br\s*/?&gt;', r'<br>', text)
 
     if HtmlLinks:
-        page_text = re.sub('&lt;A(\s.+?)&gt;(.*?)&lt;/A&gt;', transform_html_link, flags=re.I)
+        text = re.sub('&lt;A(\s.+?)&gt;(.*?)&lt;/A&gt;', transform_html_link, flags=re.I)
     
     # Free links [[page_name]], [[page_name | link_text]]
     if FreeLinks:
-        page_text = re.sub(fr'\[\[{freeLinkPattern}(?:\|([^]]+))?\]\]', transform_free_link, page_text)
+        text = re.sub(fr'\[\[{free_link_pattern}(?:\|([^]]+))?\]\]', transform_free_link, text)
 
     if BracketText:
         # Bracket links with text [url link-text], [interlink link-text]
-        page_text = re.sub(rf'\[{urlPattern}\s+([^\]]+?)\]', transform_bracket_url, page_text)
-        page_text = re.sub(rf'\[{interLinkPattern}\s*([^\]]+?)\]', transform_bracket_interlink, page_text)
+        text = re.sub(rf'\[{url_pattern}\s+([^\]]+?)\]', transform_bracket_url, text)
+        text = re.sub(rf'\[{inter_link_pattern}\s*([^\]]+?)\]', transform_bracket_interlink, text)
         if WikiLinks and BracketWiki:
             # Bracket links with text: [page text], [page#anchor text]
-            page_text = re.sub(rf'\[{linkPattern}\s+([^\]]+?\]', transform_bracket_link, page_text)
-            page_text = re.sub(rf'\[{anchoredLinkPattern}\s+([^\]]+?\]', transform_bracket_anchored_link, page_text)
+            text = re.sub(rf'\[{link_pattern}\s+([^\]]+?\]', transform_bracket_link, text)
+            text = re.sub(rf'\[{anchored_link_pattern}\s+([^\]]+?\]', transform_bracket_anchored_link, text)
 
     # Bracket links, no text: [url], [interlink]
-    page_text = re.sub(rf'\[{urlPattern}\]', transform_bracket_url, page_text)
-    page_text = re.sub(rf'\[{interLinkPattern}\]', transform_bracket_interlink, page_text)
+    text = re.sub(rf'\[{url_pattern}\]', transform_bracket_url, text)
+    text = re.sub(rf'\[{inter_link_pattern}\]', transform_bracket_interlink, text)
 
     # Naked links
-    page_text = re.sub(rf'\b{urlPattern}', transform_naked_url, page_text)
-    page_text = re.sub(rf'\b{interLinkPattern}', transform_naked_interlink, page_text)
+    text = re.sub(rf'\b{url_pattern}', transform_naked_url, text)
+    text = re.sub(rf'\b{inter_link_pattern}', transform_naked_interlink, text)
 
     if WikiLinks:
-        page_text = re.sub(rf'{anchoredLinkPattern}', transform_anchored_link, page_text)
-        page_text = re.sub(rf'{linkPattern}', transform_link, page_text)
+        text = re.sub(rf'{anchored_link_pattern}', transform_anchored_link, text)
+        text = re.sub(rf'{link_pattern}', transform_link, text)
 
         # RFC pattern
         # ISBN pattern
@@ -424,7 +422,7 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     # beginning of a line, or alone on a line, or anything like that.
     #
     # Given the latter two facts, we take a pretty ham-fisted approach.
-    page_text = re.sub('----+', '\n\n---\n\n', page_text)
+    text = re.sub('----+', '\n\n---\n\n', text)
 
     # (End of first invocation of CommonMarkup.)
 
@@ -443,11 +441,11 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     #
     # For numbered lists, the problem cannot be fixed. There is no way to get
     # Markdown to restart numbering for the second list, it treats them as one.
-    page_text = re.sub(r'^\*(.*?)\n\s*\n\*', r'*\1\n<br><br>\n*', page_text, flags=re.MULTILINE)
-    if re.search(r'^\#[^\n]*(\n\s*)+\n\#', page_text, flags=re.MULTILINE):
+    text = re.sub(r'^\*(.*?)\n\s*\n\*', r'*\1\n<br><br>\n*', text, flags=re.MULTILINE)
+    if re.search(r'^\#[^\n]*(\n\s*)+\n\#', text, flags=re.MULTILINE):
         print(f'WARNING: Page contains adjacent numbered lists separated by blank lines which will misbehave in Markdown.')
 
-    page_text = usemod_lines_to_markdown(page_text)
+    text = usemod_lines_to_markdown(text)
 
 
     # USEMODISH REWRITE CONTINUING HERE in CommonMarkup
@@ -455,7 +453,7 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     # List start fix
     #
     # Markdown best practice requires a blank line before a list.
-    page_text = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', page_text, flags=re.MULTILINE)
+    text = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', text, flags=re.MULTILINE)
 
     # List depth error fix
     #
@@ -470,19 +468,19 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     #
     # Make sure this is done after all lists are translated,
     # since the asterisks would be trouble otherwise.
-    page_text = re.sub(r"<em>([^'\n]+?)</em>", r'*\1*', page_text)
-    page_text = re.sub(r"<strong>;([^'\n]+?)</strong>", r'**\1**', page_text)
+    text = re.sub(r"<em>([^'\n]+?)</em>", r'*\1*', text)
+    text = re.sub(r"<strong>;([^'\n]+?)</strong>", r'**\1**', text)
 
     # <toc>
     #
     # You will need a Markdown processor or plugin that can translate this.
-    page_text = re.sub('&lt;toc&gt;', '[[toc]]', page_text)
+    text = re.sub('&lt;toc&gt;', '[[toc]]', text)
 
     if debug_format:
         print('!===============================')
-        print(page_text)
+        print(text)
         print('!===============================')
-    return restore_chunks(page_text)
+    return restore_chunks(text)
 
 def usemod_lines_to_markdown(page_text):
     # UseMod had a function to do line-by-line processing of things that build
