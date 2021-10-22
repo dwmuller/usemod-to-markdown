@@ -588,7 +588,7 @@ def usemod_lines_to_markdown(page_text):
                 while len(heading_numbers) > depth:
                     heading_numbers.pop()
                 heading_numbers[-1] = heading_numbers[-1] + 1
-                number = '.'.join([str(n) for n in heading_numbers])
+                number = '.'.join([str(n) for n in heading_numbers]) + '.'
                 return f'{number} '
             def transform_heading(m):
                 depth = min(len(m.group(1)), 6)
