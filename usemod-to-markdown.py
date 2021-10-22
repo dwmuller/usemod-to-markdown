@@ -16,7 +16,6 @@ TODO:
 # Standard packages
 import datetime
 import io
-import os
 import re
 import sys
 from os.path import join
@@ -439,7 +438,8 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
     # empty line. The standard Markdown fix for this is two spaces at the end of
     # the last item to indicate a line break, but that's impossible to edit.
     # Most processors will accept HTML <br>, but you need two of them to
-    # introduce the separator between lists.
+    # introduce the separator between lists. This is easier to do by adjusting
+    # the wiki text before transforming to Markdown.
     #
     # For numbered lists, the problem cannot be fixed. There is no way to get
     # Markdown to restart numbering for the second list, it treats them as one.
@@ -451,12 +451,6 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
 
 
     # USEMODISH REWRITE CONTINUING HERE in CommonMarkup
-
-    # Monospaced text
-    #
-    # UseMod is triggered by a single space and preserves the rest.
-    # Markdown requires four spaces (or a tab).
-    page_text = re.sub(r'^ (.*)$', r'    \1', page_text, flags=re.MULTILINE)
 
     # List start fix
     #
@@ -490,33 +484,48 @@ def usemod_page_to_markdown(page_text, page_id, parent_id):
         print('!===============================')
     return restore_chunks(page_text)
 
-#
-# Handle some of the more complex things that 
-# require tracking line-by-line context.
-#
 def usemod_lines_to_markdown(page_text):
+    # UseMod had a function to do line-by-line processing of things that build
+    # nested HTML contexts, like lists, tables, etc. Since we're translating to
+    # Markdown, we are not generating nested output syntax. Therefore, we could
+    # do some of these by operating on the whole page at once. However, the
+    # order in which things are transformed matters sometimes, so we have kept
+    # them here for now.
+
     page_markdown = ""
-    headingNumbers = []
+    heading_numbers = []
+    table_mode = False
+
     for line in page_text.splitlines():
+        if debug_format: print(f'in : {line}')
         line = line + '\n'
 
         # TODO: Definitions
-        # simple lists and indented text
+
+        # Indented text
+        #
+        # Markdown doesn't support indented text at all, but we convert that to
+        # blockquotes.
+        def transform_indented_text(m):
+            depth = len(m.group(1))
+            if debug_format: print(f' !indented_text(depth {depth})')
+            prefix = '>'*depth
+            return f'{prefix}'
+        line = re.sub(r'^(:+)', transform_indented_text, line)
+
+        # Unordered lists
         #
         # UseMod lists indicate sublists by number of asterisks, and you can
         # omit the space after them. Markdown wants you to indent sublists and
         # requires a space afterwards.
-        #
-        # Markdown doesn't support indented text at all, so we convert that to
-        # a simple list.
-        def transform_simple_list_item(m):
-            if debug_format: print(f' !simple_list_item')
-            prefix = '    '*(len(m.group(1))-1)
-            return f'{prefix}* {m.group(2)}'
-        line = re.sub(r'^([\*\:]+)\s*(.*)$', transform_simple_list_item, line)
+        def transform_unordered_list_item(m):
+            depth = len(m.group(1))
+            if debug_format: print(f' !unordered_list_item(depth {depth})')
+            prefix = '    '*(depth -1)
+            return f'{prefix}*'
+        line = re.sub(r'^(\*+)', transform_unordered_list_item, line)
 
-        #
-        # numbered lists
+        # Ordered lists
         #
         # UseMod lists indicate sublists by number of hashes, and you can omit
         # the space after them. Markdown wants you to indent sublists and
@@ -524,19 +533,40 @@ def usemod_lines_to_markdown(page_text):
         #
         # This must be done before headings, otherwise Markdown headings will
         # look like numbered list.
-        def transform_numbered_list_item(m):
-            if debug_format: print(f' !numbered_list_item')
-            prefix = '    '*(len(m.group(1))-1)
-            return f'{prefix}1. {m.group(2)}'
-        line = re.sub(r'^(#+)\s*(.*)$', transform_numbered_list_item, line)
+        def transform_ordered_list_item(m):
+            depth = len(m.group(1));
+            if debug_format: print(f' !ordered_list_item(depth {depth})')
+            prefix = '    '*(depth-1)
+            return f'{prefix}1.'
+        line = re.sub(r'^(#+)', transform_ordered_list_item, line)
 
-        # TODO: Tables
+        def transform_table_line(m):
+            nonlocal table_mode
+            fields = m.group(1)[:-2].split('||')
+            if debug_format: print(f'!table_line({len(fields)} fields)')
+            result = f'|{"|".join(fields)}|'
+            if not table_mode:
+                # Markdown tables *must* have a header line to be recognized as
+                # such.
+                header_separator = '|'.join('-'*len(x) for x in fields)
+                result = result + f'\n|{header_separator}|'
+                table_mode = True
+            return result
+        (line, match_count) = re.subn(r'^\|\|((.*?\|\|)+)', transform_table_line, line)
+        if match_count == 0:
+            table_mode = False
 
-        # (Begin second per-line invocation of CommonMarkup.)
+        # Monospaced text
+        #
+        # UseMod is triggered by a single space and preserves the rest.
+        # Markdown requires four spaces (or a tab).
+        line = re.sub(r'^([ \t].*)', r'    \1', line)
+
+        # (Begin second (per-line) invocation of CommonMarkup.)
 
         # Emphasis. Translate to HTML, later to Markup.
-        line = re.sub("('*)'''(.*?)'''", "\1<strong>\2</strong>", line)
-        line = re.sub("''(.*?)''", "<em>\1</em>", line)
+        line = re.sub("('*)'''(.*?)'''", r"\1<strong>\2</strong>", line)
+        line = re.sub("''(.*?)''", r"<em>\1</em>", line)
 
         # Headings
         #
@@ -551,14 +581,14 @@ def usemod_lines_to_markdown(page_text):
                 if number is None: return ''
                 depth = depth -1
                 if depth <= 0: return ''
-                while len(headingNumbers) < depth-1:
-                    headingNumbers.append(1)
-                if len(headingNumbers) < depth:
-                    headingNumbers.append(0)
-                while len(headingNumbers) > depth:
-                    headingNumbers.pop()
-                headingNumbers[-1] = headingNumbers[-1] + 1
-                number = '.'.join([str(n) for n in headingNumbers])
+                while len(heading_numbers) < depth-1:
+                    heading_numbers.append(1)
+                if len(heading_numbers) < depth:
+                    heading_numbers.append(0)
+                while len(heading_numbers) > depth:
+                    heading_numbers.pop()
+                heading_numbers[-1] = heading_numbers[-1] + 1
+                number = '.'.join([str(n) for n in heading_numbers])
                 return f'{number} '
             def transform_heading(m):
                 depth = min(len(m.group(1)), 6)
@@ -570,6 +600,7 @@ def usemod_lines_to_markdown(page_text):
                 return f'{"#"*depth} {number}{text}\n{rest}'
             line = re.sub(r'^\s*(=+)\s+(#\s+)?(.*?)\s+=+(.*)$', transform_heading, line)
 
+        if debug_format: print(f'out: {line}')
         page_markdown = page_markdown + line
 
     return page_markdown
