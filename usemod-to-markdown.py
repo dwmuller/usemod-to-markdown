@@ -4,10 +4,8 @@
 Converts UseMod wiki pages to markdown files .
 
 TODO: 
-* Finish UseModish rewrite
-* Tables
 * Front matter, once I know what I want.
-* Options should come from command line. (base URL, debugging)
+* More options should come from command line. (base URL, debugging)
 * trailing slash on page URLs should be optional
 * read UseMod config file?
 
@@ -25,6 +23,7 @@ import yaml
 
 # options
 debug_format = False
+supress_msgs = False
 base_url='{{ wiki_base_path }}'
 html_allowed = True  # Markdown target allows embedded HTML
 
@@ -86,7 +85,7 @@ def initialize_intermap(input_dir):
     intermap_prefix = f'(P<intermap_key>{"|".join(intermap)}):'
 
 def convert_page_file(file, output_dir, parent_id = None):
-    print (f'Converting file {file}')
+    if not supress_msgs: print (f'Converting file {file}')
     contents = open(file, encoding='cp1252').read()
     #print contents
 
@@ -223,7 +222,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     def make_marker(n):
         return f'{FS}{n}{FS}'
 
-    def get_bracket_url_index(url):
+    def get_bracket_index(url):
         nonlocal last_bracket_url_index
         nonlocal indexed_bracket_urls
         i = indexed_bracket_urls.get(url)
@@ -232,6 +231,11 @@ def usemod_page_to_markdown(text, page_id, parent_id):
             indexed_bracket_urls[url] = last_bracket_url_index
             i = last_bracket_url_index
         return f'{i}'
+    def get_text_or_bracket_index(ref, text):
+        if text is None:
+            return get_bracket_index(ref)
+        else:
+            return text.strip()
 
     def store_raw(html):
         nonlocal last_chunk_index
@@ -252,87 +256,112 @@ def usemod_page_to_markdown(text, page_id, parent_id):
             txt = re.sub(marker, quoted_replacement, txt, count=1, flags=re.ASCII)
         return txt
 
-    def store_pre(txt, tag):
-        return store_raw(f'<{tag}>{txt}</{tag}>')
-    def store_href(anchor, link_text=''):
-        return f'<a{store_raw(anchor)}>{link_text}</a>'
-    def store_page_link(page, link_text):
-        if FreeLinks:
-            # trim extra spaces
-            page = page.strip()
-            page = re.sub(r'\s*/\s*','/', page) # around subpage delim
-        if link_text is not None: link_text = link_text.strip() 
-        nonlocal parent_id
-        return store_raw(get_page_link(page, None, link_text, parent_id))
-    def store_bracket_url(url, link_text = None):
-        if link_text is None:
-            link_text = get_bracket_url_index(url)
-        return store_raw(f'[{link_text}]({url})')
-    def store_bracket_interlink(id, link_text = None):
-        site, remote_page = id.split(':',1)
-        remote_page = remote_page.replace('&amp;','&')
-        url = intermap.get(site)
-        if link_text is None:
-            if url is None:
-                return f'[{id}]'
-            link_text = get_bracket_url_index(id)
-        elif url is None:
-            return f'[{id} {link_text}]'
-        url = url + remote_page;
-        link_text = f'[{link_text}]'
-        return store_raw(f'[{link_text}]({url})')
-    def store_bracket_link(page, link_text):
-        return store_raw(get_page_link(page, None, f'[{link_text}]', parent_id))
-    def store_bracket_anchored_link(page, anchor, link_text):
-        return store_raw(get_page_link(page, anchor, f'[{link_text}]', parent_id))
 
+    def store_markdown_link(url, link_text = None):
+        if link_text is None:
+            return store_raw(f'<{url}>')
+        else:
+            return store_raw(f'[{link_text}]({url})')
+    def store_link_or_image(url, link_text = None):
+        # TODO: images.
+        return store_markdown_link(url, link_text)
+
+    def transform_pre(m):
+        tag = m[1]
+        txt = m[2]
+        if debug_format: print(f'!pre({tag})')
+        return store_raw(f'<{tag}>{txt}</{tag}>')
+    def transform_raw(m):
+        if debug_format: print(f'!raw')
+        return store_raw(m[1])
     def transform_html_link(m):
-        if debug_format: print('!html_link')
-        return store_href(m.group(1), m.group(2))
+        # <A attributes>link_text</A>
+        attr_text = m[1]
+        link_text = m[2]
+        if debug_format: print(f'!html_link("{attr_text}","{link_text}")')
+        quotes = '"|\''
+        attrs = attr_text.findall(rf'(\w+)=({quotes})(.*?)\2')
+        if len(attrs) == 1 and attrs[0][0].upper == 'HREF':
+            url = attrs[0]
+            return store_markdown_link(url, link_text)
+        # Store it unmodified and hope that the Markdown processer can handle
+        # the naked HTML.
+        return store_markdown_link(m[0])
     def transform_free_link(m):
-        # We generate links using a site-wide prefix, and trailing slashes.
-        page_name = m.group(1)
-        link_text = m.group(2) if m.lastindex > 1 else None
-        if debug_format: print (f'!free_link("{page_name}", "{link_text}")')
-        return store_page_link(page_name, link_text)
+        # [[PageRef]], [[PageRef link_text]]
+        page_ref = m[1]
+        link_text = m[2] if m.lastindex > 1 else None
+        if debug_format: print (f'!free_link("{page_ref}", "{link_text}")')
+        if link_text is None:
+            link_text = page_ref
+        else:
+            link_text = link_text.strip()
+        # trim extra spaces
+        page_ref = page_ref.strip()
+        page_ref = re.sub(r'\s*/\s*','/', page_ref) # around subpage delim
+        url, link_text = get_link_parts(page_ref, None, link_text, parent_id)
+        return store_markdown_link(url, link_text)
     def transform_bracket_url(m):
-        url = m.group(1)
-        link_text = m.group(2) if m.lastindex > 1 else None
+        # [url], [url link_text]
+        url = m[1]
+        link_text = m[2] if m.lastindex > 1 else None
         if debug_format: print(f'!bracket_url("{url}", "{link_text}")')
-        return store_bracket_url(url, link_text)
+        if link_text is None:
+            link_text = get_bracket_index(url)
+        else:
+            link_text = f'[{link_text.strip()}]'
+        return store_markdown_link(url, link_text)
     def transform_bracket_interlink(m):
-        id = m.group(1)
-        link_text = m.group(2) if m.lastindex > 1 else None
-        if debug_format: print(f'!bracket_interlink("{id}","{link_text}")')
-        return store_bracket_interlink(id, link_text)
+        interlink = m[1]
+        link_text = m[2] if m.lastindex > 1 else None
+        if debug_format: print(f'!interlink("{interlink}","{link_text}")')
+        url = get_interlink_url(interlink)
+        if url is None:
+            return m[0] # Can't translate it, leave it alone, could be a misfire.
+        if link_text is None:
+            link_text = get_bracket_index(interlink)
+        else:
+            link_text = f'[{link_text.strip()}]'
+        return store_markdown_link(url, link_text)
     def transform_bracket_link(m):
-        id = m.group(1)
-        link_text = m.group(2) if m.lastindex > 1 else None
-        if debug_format: print(f'!bracket_link("{id}", "{link_text}")')
-        store_bracket_link(id, link_text)
+        page_ref = m[1]
+        link_text = m[2]
+        if debug_format: print(f'!bracket_link("{page_ref}", "{link_text}")')
+        url, link_text = get_link_parts(page_ref, None, f'[{link_text}]', parent_id)
+        return store_markdown_link(url, link_text)
     def transform_bracket_anchored_link(m):
-        id = m.group(1)
-        anchor = m.group(2)
-        link_text = m.group(3) if m.lastindex > 1 else None
-        if debug_format: print(f'!bracket_anchored_link("{id}", "{anchor}", "{link_text}")')
-        return store_bracket_anchored_link(id, anchor, link_text)
-    def transform_naked_url(m):
-        url = m.group(1)
-        if debug_format: print(f'!naked_url("{url}")')
-        return store_raw(f'<{url}>')
+        page_ref = m[1]
+        anchor = m[2]
+        link_text = m[3] if m.lastindex > 1 else None
+        if debug_format: print(f'!bracket_anchored_link("{page_ref}", "{anchor}", "{link_text}")')
+        url, link_text = get_link_parts(page_ref, anchor, f'[{link_text}]', parent_id)
+        return store_markdown_link(url, link_text)
     def transform_naked_interlink(m):
-        interlink = m.group(1)
+        interlink = m[1]
         if debug_format: print(f'!naked_interlink("{interlink}")')
-        return store_bracket_interlink(interlink)
+        interlink, extra = split_url_punct(interlink)
+        link_text = interlink
+        url = get_interlink_url(interlink)
+        if url is None:
+            return m[0]
+        link_text = id
+        return store_link_or_image(interlink, link_text) + extra
+    def transform_naked_url(m):
+        url = m[1]
+        if debug_format: print(f'!naked_url("{url}")')
+        url, extra = split_url_punct(url)
+        return store_link_or_image(url) + extra
     def transform_anchored_link(m):
-        link = m.group(1)
-        anchor = m.group(2)
+        link = m[1]
+        anchor = m[2]
         if debug_format: print(f'!anchored_link("{link}","{anchor}")')
-        return store_raw(get_page_link(link, anchor, None, parent_id))
-    def transform_link(m):
-        link = m.group(1)
-        if debug_format: print(f'!link("{link}")')
-        return store_raw(get_page_link(link, None, None, parent_id))
+        url, link_text = get_link_parts(link, anchor, None, parent_id)
+        return store_markdown_link(url, link_text)
+    def transform_naked_link(m):
+        link = m[1]
+        if debug_format: print(f'!naked_link("{link}")')
+        url, link_text = get_link_parts(link, None, None, parent_id)
+        return store_markdown_link(url, link_text)
 
 
 
@@ -340,9 +369,6 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     if RawHtml:
         if not html_allowed:
             raise 'Raw HTML block encountered, not supported in output.'
-        def transform_raw(m):
-            if debug_format: print(f'!raw')
-            return store_raw(m.group(1))
         text = re.sub(r'<html>((.|\n)*?)</html>', transform_raw, text)
 
     # Quote HTML
@@ -353,15 +379,10 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     # <nowiki> blocks
     def transform_nowiki(m):
         if debug_format: print(f'!nowiki')
-        return store_raw(m.group(1))
+        return store_raw(m[1])
     text = re.sub(r'&lt;nowiki&gt;((.|\n)*?)&lt;/nowiki&gt;', transform_nowiki, text)
 
     # <pre>, <code> blocks
-    def transform_pre(m):
-        tag = m.group(1)
-        txt = m.group(2)
-        if debug_format: print(f'!pre({tag})')
-        return store_pre(txt,tag)
     text = re.sub(r'&lt;(pre|code)&gt;((.|\n)*?)&lt;/\1&gt;', transform_pre, text)
 
     # Now translate allowed HTML tags back to unquoted HTML.
@@ -406,7 +427,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
 
     if WikiLinks:
         text = re.sub(rf'{anchored_link_pattern}', transform_anchored_link, text)
-        text = re.sub(rf'{link_pattern}', transform_link, text)
+        text = re.sub(rf'{link_pattern}', transform_naked_link, text)
 
         # RFC pattern
         # ISBN pattern
@@ -425,6 +446,12 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     text = re.sub('----+', '\n\n---\n\n', text)
 
     # (End of first invocation of CommonMarkup.)
+
+    # List start fix
+    #
+    # Markdown best practice requires a blank line before a list. Do this before
+    # the adjacent lists fix, because we make an exception there.
+    text = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', text, flags=re.MULTILINE)
 
     # Adjacent lists fix
     #
@@ -449,11 +476,6 @@ def usemod_page_to_markdown(text, page_id, parent_id):
 
 
     # USEMODISH REWRITE CONTINUING HERE in CommonMarkup
-
-    # List start fix
-    #
-    # Markdown best practice requires a blank line before a list.
-    text = re.sub(r'^(?!\*)(.*\S.*)\n\*', r'\1\n\n*', text, flags=re.MULTILINE)
 
     # List depth error fix
     #
@@ -493,6 +515,8 @@ def usemod_lines_to_markdown(page_text):
     page_markdown = ""
     heading_numbers = []
     table_mode = False
+    numbered_list_mode = False
+    list_item_count = 0
 
     for line in page_text.splitlines():
         if debug_format: print(f'in : {line}')
@@ -500,12 +524,22 @@ def usemod_lines_to_markdown(page_text):
 
         # TODO: Definitions
 
+        # Monospaced text
+        #
+        # UseMod checks this later, but we have to put it before
+        # the list transformations because Markdown syntax adds
+        # spaces at start of line.
+        #
+        # UseMod is triggered by a single space and preserves the rest.
+        # Markdown requires four spaces (or a tab).
+        line = re.sub(r'^([ \t].*)', r'    \1', line)
+
         # Indented text
         #
         # Markdown doesn't support indented text at all, but we convert that to
         # blockquotes.
         def transform_indented_text(m):
-            depth = len(m.group(1))
+            depth = len(m[1])
             if debug_format: print(f' !indented_text(depth {depth})')
             prefix = '>'*depth
             return f'{prefix}'
@@ -517,9 +551,9 @@ def usemod_lines_to_markdown(page_text):
         # omit the space after them. Markdown wants you to indent sublists and
         # requires a space afterwards.
         def transform_unordered_list_item(m):
-            depth = len(m.group(1))
+            depth = len(m[1])
             if debug_format: print(f' !unordered_list_item(depth {depth})')
-            prefix = '    '*(depth -1)
+            prefix = '  '*(depth-1)
             return f'{prefix}*'
         line = re.sub(r'^(\*+)', transform_unordered_list_item, line)
 
@@ -532,15 +566,22 @@ def usemod_lines_to_markdown(page_text):
         # This must be done before headings, otherwise Markdown headings will
         # look like numbered list.
         def transform_ordered_list_item(m):
-            depth = len(m.group(1));
+            nonlocal numbered_list_mode
+            nonlocal list_item_count
+            depth = len(m[1]);
             if debug_format: print(f' !ordered_list_item(depth {depth})')
-            prefix = '    '*(depth-1)
-            return f'{prefix}1.'
-        line = re.sub(r'^(#+)', transform_ordered_list_item, line)
+            prefix = '  '*(depth-1)
+            if numbered_list_mode:
+                list_item_count = list_item_count + 1
+            else:
+                list_item_count = 1
+            return f'{prefix}{list_item_count}.'
+        line, match_count = re.subn(r'^(#+)', transform_ordered_list_item, line)
+        numbered_list_mode = (match_count != 0)
 
         def transform_table_line(m):
             nonlocal table_mode
-            fields = m.group(1)[:-2].split('||')
+            fields = m[1][:-2].split('||')
             if debug_format: print(f'!table_line({len(fields)} fields)')
             result = f'|{"|".join(fields)}|'
             if not table_mode:
@@ -550,15 +591,8 @@ def usemod_lines_to_markdown(page_text):
                 result = result + f'\n|{header_separator}|'
                 table_mode = True
             return result
-        (line, match_count) = re.subn(r'^\|\|((.*?\|\|)+)', transform_table_line, line)
-        if match_count == 0:
-            table_mode = False
-
-        # Monospaced text
-        #
-        # UseMod is triggered by a single space and preserves the rest.
-        # Markdown requires four spaces (or a tab).
-        line = re.sub(r'^([ \t].*)', r'    \1', line)
+        line, match_count = re.subn(r'^\|\|((.*?\|\|)+)', transform_table_line, line)
+        table_mode = match_count != 0
 
         # (Begin second (per-line) invocation of CommonMarkup.)
 
@@ -589,10 +623,10 @@ def usemod_lines_to_markdown(page_text):
                 number = '.'.join([str(n) for n in heading_numbers]) + '.'
                 return f'{number} '
             def transform_heading(m):
-                depth = min(len(m.group(1)), 6)
-                number = m.group(2)
-                text = m.group(3)
-                rest = "\n" + m.group(4)
+                depth = min(len(m[1]), 6)
+                number = m[2]
+                text = m[3]
+                rest = "\n" + m[4]
                 number = '' if number is None else wiki_heading_number(number, depth)
                 if debug_format: print(f'!heading({depth}, {number}, "{text}")')
                 return f'{"#"*depth} {number}{text}\n{rest}'
@@ -611,18 +645,42 @@ def quote_html(txt):
     txt = re.sub(r'\>','&gt;', txt)
     return txt;
 
-def get_page_link(id, anchor, link_text, parent_id):
+def split_url_punct(url):
+    # Remove delimiters if present
+    url, n = re.subn(r'""$', '', url)
+    if n > 0:
+        return url, ''
+    m = re.match(r'^(.*?)([^a-zA-Z0-9/\x80-\xff]+)?$', url)
+    punct = '' if m.lastindex < 2 else m[2]
+    return m[1], punct
+
+def get_link_parts(page_ref, anchor, link_text, parent_id):
     if link_text is None:
-        link_text = id
         if FreeLinks:
-            link_text = link_text.replace("_"," ")
+            link_text = page_ref.replace("_"," ")
+        else:
+            link_text = page_ref
+
+    page_ref = re.sub('^/', f'{parent_id}/', page_ref)
     if FreeLinks:
-        id = free_to_normal(id)
-    id = re.sub('^/', f'{parent_id}/', id)
+        page_ref = free_to_normal(page_ref)
     if anchor is not None:
-        id = f'{id}#{anchor}'
+        page_ref = f'{page_ref}#{anchor}'
         link_text = f'{link_text}#{anchor}'
-    return f'[{link_text}]({base_url}{id})'
+    # We generate links using a site-wide prefix, and trailing slashes.
+    url = f'{base_url}{page_ref}/'
+    return (url, link_text)
+
+def get_interlink_url(interlink):
+    t = interlink.split(':',1)
+    if len(t) != 2:
+        return None # Something odd going on, reject it.
+    site, remote_page = t
+    remote_page = remote_page.replace('&amp;','&')
+    url = intermap.get(site)
+    if url is not None:
+        url = url + remote_page
+    return url
 
 def free_to_normal(title):
     # Capitalize letters after certain chars.
@@ -636,7 +694,7 @@ def free_to_normal(title):
         title = re.sub('_/', '/', title)
         title = re.sub('/_', '/', title)
     if FreeUpper:
-        title = re.sub(r'([-_.,\(\)/])([a-z])', lambda m: m.group(1) + m.group(2).capitalize(), title)
+        title = re.sub(r'([-_.,\(\)/])([a-z])', lambda m: m[1] + m[2].capitalize(), title)
     return title
 
 def print_usage():
@@ -652,17 +710,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Convert UseMod wiki pages to Markdown.')
     parser.add_argument('input', type=pathlib.Path, help='UseMod data directory, or a single UseMod page file.')
     parser.add_argument('output_dir', type=pathlib.Path, help='Output directory.', nargs='?')
+    parser.add_argument('--debug', help='Generate debug output.', action='store_true')
+    parser.add_argument('--silent', help='Suppress progress messages.', action='store_true')
 
     args = parser.parse_args()
 
     input = args.input
     output_dir = args.output_dir
+    debug_format = args.debug
+    supress_msgs = args.silent
 
     init_link_patterns()
 
     if input.is_file():
-        print('Assuming input file is a page file.')
-        debug_format = True
+        if not supress_msgs: print('Assuming input file is a page file.')
         convert_page_file(input, output_dir)
     else:
         if not input.is_dir():
