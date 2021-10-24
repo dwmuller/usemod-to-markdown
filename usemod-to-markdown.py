@@ -22,9 +22,11 @@ from os.path import join
 import yaml
 
 # options
+overwrite_outputs = False
 debug_format = False
 supress_msgs = False
 base_url='{{ wiki_base_path }}'
+home_page = 'HomeWiki'
 html_allowed = True  # Markdown target allows embedded HTML
 
 # Selected UseMod wiki config options.
@@ -64,11 +66,7 @@ def usemod_pages_to_markdown_files(input_dir, output_dir):
                     for subpage_item in page_item.iterdir():
                         subpage_output_dir = output_dir / page_item.name
                         subpage_output_dir.mkdir(parents=True, exist_ok=True)
-                        convert_page_file(subpage_item, subpage_output_dir, page_item.name)
-
-    # for root, _, files in os.walk(join(input_dir, 'page')):
-    #     for file in files:
-    #         convert_page_file(join(root, file), output_dir)
+                        convert_page_file(subpage_item, subpage_output_dir)
 
 def initialize_intermap(input_dir):
     global intermap
@@ -84,8 +82,13 @@ def initialize_intermap(input_dir):
         intermap['Local'] = base_url;
     intermap_prefix = f'(P<intermap_key>{"|".join(intermap)}):'
 
-def convert_page_file(file, output_dir, parent_id = None):
+def convert_page_file(file, output_dir):
     if not supress_msgs: print (f'Converting file {file}')
+
+    parent_id = None
+    if file.parent.parent.name != 'page':
+        parent_id = file.parent.name
+
     contents = open(file, encoding='cp1252').read()
     #print contents
 
@@ -102,14 +105,15 @@ def convert_page_file(file, output_dir, parent_id = None):
     markdown_text = usemod_page_to_markdown(text, page_id, parent_id)
 
     if output_dir is None:
-        write_post(sys.stdout, page_id, dt, markdown_text)
+        out_fh = sys.stdout
     else:
         output_file = f'{page_id}.md'
         filename = sys.stdout if output_dir is None else (output_dir / output_file).resolve()
+        if not overwrite_outputs and filename.exists():
+            print(f'WARNING: Output file exists, will not overwrite: {filename}')
+            return
         out_fh = io.open(filename, 'w', encoding='utf-8')
-        write_post(out_fh, page_id, dt, markdown_text)
-
-    #print(' timestamp:', timestamp, ' date:', dt.isoformat().replace('T', ' '), '\n')
+    write_post(out_fh, parent_id, page_id, dt, markdown_text)
 
 def usemod_data_to_dictionary(buf, fs):
     s = buf.split(fs)
@@ -118,10 +122,16 @@ def usemod_data_to_dictionary(buf, fs):
     assert len(keys) == len(vals)
     return dict(list(zip(keys, vals)))
 
-def write_post(out_fh, title, dt, txt):
-    frontmatter = {'title': title,
+def write_post(out_fh, parent_id, page_id, dt, txt):
+    page_title = page_id.replace('_',' ') if FreeLinks else page_id
+    frontmatter = {'title': page_title,
                    'date': dt.isoformat()
                   }
+    # We add a parent only for sub-pages.
+    if parent_id is not None:
+        if FreeLinks:
+            parent_title = re.sub('_', ' ', parent_id)
+        frontmatter['wiki_parent'] = parent_title
 
     out_fh.write('---\n')
     yaml.dump(frontmatter, out_fh, default_flow_style=False)
@@ -289,6 +299,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         return store_markdown_link(m[0])
     def transform_free_link(m):
         # [[PageRef]], [[PageRef link_text]]
+        nonlocal parent_id
         page_ref = m[1]
         link_text = m[2] if m.lastindex > 1 else None
         if debug_format: print (f'!free_link("{page_ref}", "{link_text}")')
@@ -330,6 +341,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         url, link_text = get_link_parts(page_ref, None, f'[{link_text}]', parent_id)
         return store_markdown_link(url, link_text)
     def transform_bracket_anchored_link(m):
+        nonlocal parent_id
         page_ref = m[1]
         anchor = m[2]
         link_text = m[3] if m.lastindex > 1 else None
@@ -352,12 +364,14 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         url, extra = split_url_punct(url)
         return store_link_or_image(url) + extra
     def transform_anchored_link(m):
+        nonlocal parent_id
         link = m[1]
         anchor = m[2]
         if debug_format: print(f'!anchored_link("{link}","{anchor}")')
         url, link_text = get_link_parts(link, anchor, None, parent_id)
         return store_markdown_link(url, link_text)
     def transform_naked_link(m):
+        nonlocal parent_id
         link = m[1]
         if debug_format: print(f'!naked_link("{link}")')
         url, link_text = get_link_parts(link, None, None, parent_id)
@@ -473,9 +487,6 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         print(f'WARNING: Page contains adjacent numbered lists separated by blank lines which will misbehave in Markdown.')
 
     text = usemod_lines_to_markdown(text)
-
-
-    # USEMODISH REWRITE CONTINUING HERE in CommonMarkup
 
     # List depth error fix
     #
@@ -709,31 +720,33 @@ import pathlib
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Convert UseMod wiki pages to Markdown.')
     parser.add_argument('input', type=pathlib.Path, help='UseMod data directory, or a single UseMod page file.')
-    parser.add_argument('output_dir', type=pathlib.Path, help='Output directory.', nargs='?')
+    parser.add_argument('output_dir', type=pathlib.Path, help='Output directory, created if missing.', nargs='?')
     parser.add_argument('--debug', help='Generate debug output.', action='store_true')
     parser.add_argument('--silent', help='Suppress progress messages.', action='store_true')
+    parser.add_argument('--overwrite', help='Overwrite existing output file(s).', action='store_true')
 
     args = parser.parse_args()
 
     input = args.input
     output_dir = args.output_dir
+    overwrite_outputs = args.overwrite
     debug_format = args.debug
     supress_msgs = args.silent
 
     init_link_patterns()
 
+    input = input.resolve()
+
     if input.is_file():
-        if not supress_msgs: print('Assuming input file is a page file.')
+        if not supress_msgs: print(f'Assuming input file {input} is a page file.')
         convert_page_file(input, output_dir)
     else:
         if not input.is_dir():
             sys.exit('UseMod wiki db directory not found')
-
-        output_dir.mkdir(exist_ok=True)
-
         if not (input / 'page').exists():
             sys.exit('UseMod page directory not found')
-
+        if output_dir is not None:
+            output_dir.mkdir(exist_ok=True)
         usemod_pages_to_markdown_files(input, output_dir)
 
 
