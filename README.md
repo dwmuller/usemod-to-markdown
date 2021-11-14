@@ -1,4 +1,4 @@
-### UseMod to Markdown convertor
+# UseMod to Markdown convertor
 
 A script to convert the pages of a [UseMod
 wiki](http://www.usemod.com/cgi-bin/wiki.pl?UseModWiki) database to a set of
@@ -16,6 +16,8 @@ patterns and your SCM's conventions.
 
 No attempt is made to preserve historical edits. UseMod was designed to keep
 only the most recent few edits of a page anyway.
+
+## Using the script
 
 This script was developed using Python 3.8.
 
@@ -50,4 +52,9 @@ recipe for updating it is:
 pip freeze > requirements.txt
 ```
 
-For help using the script, run ```./usemod-to-markdown.py -h```.
+For further help using the script, run ```./usemod-to-markdown.py -h```.
+
+## Notes on output
+
+Tables are translated to Markdown-style tables. Your Markdown processor may need
+a plugin to process these, as they are not part of the CommonMark spec.
