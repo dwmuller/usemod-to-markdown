@@ -533,7 +533,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     # Make sure this is done after all lists are translated,
     # since the asterisks would be trouble otherwise.
     text = re.sub(r"<em>([^'\n]+?)</em>", r'*\1*', text)
-    text = re.sub(r"<strong>;([^'\n]+?)</strong>", r'**\1**', text)
+    text = re.sub(r"<strong>([^'\n]+?)</strong>", r'**\1**', text)
 
     # <toc>
     #
@@ -621,26 +621,29 @@ def usemod_lines_to_markdown(page_text):
         line, match_count = re.subn(r'^(#+)', transform_ordered_list_item, line)
         numbered_list_mode = (match_count != 0)
 
+        # Emphasis. Translate to HTML, later to Markup.
+        line = re.sub("('*)'''(.*?)'''", r"\1<strong>\2</strong>", line)
+        line = re.sub("''(.*?)''", r"<em>\1</em>", line)
+
         def transform_table_line(m):
             nonlocal table_mode
             fields = m[1][:-2].split('||')
             if debug_format: print(f'!table_line({len(fields)} fields)')
             result = f'|{"|".join(fields)}|'
             if not table_mode:
-                # Markdown tables *must* have a header line to be recognized as
-                # such.
                 header_separator = '|'.join('-'*len(x) for x in fields)
-                result = result + f'\n|{header_separator}|'
-                table_mode = True
+                # In many processors, Markdown tables *must* have a header line
+                # to be recognized as such. Some processors will accept a header
+                # line with header labels preceding it. As a compromise, if we
+                # detect that every field of this first row has a bolding
+                # marker, we'll assume that they are header labels.
+                if all(map(lambda f : re.search("(<b>|<strong>)",f), fields)):
+                    result = f'{result}\n|{header_separator}|'
+                else:
+                    result = f'\n|{header_separator}|\n{result}'
             return result
         line, match_count = re.subn(r'^\|\|((.*?\|\|)+)', transform_table_line, line)
         table_mode = match_count != 0
-
-        # (Begin second (per-line) invocation of CommonMarkup.)
-
-        # Emphasis. Translate to HTML, later to Markup.
-        line = re.sub("('*)'''(.*?)'''", r"\1<strong>\2</strong>", line)
-        line = re.sub("''(.*?)''", r"<em>\1</em>", line)
 
         # Headings
         #
