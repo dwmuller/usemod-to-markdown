@@ -151,14 +151,15 @@ def usemod_data_to_dictionary(buf, fs):
 
 def write_post(out_fh, parent_id, page_id, dt, txt):
     page_title = page_id.replace('_',' ') if FreeLinks else page_id
+    if parent_id and FreeLinks:
+        parent_title = re.sub('_', ' ', parent_id)
+        page_title = f'{parent_id}/{page_title}'
     frontmatter = {
         'title': page_title,
         'date': dt.isoformat()
     }
     # We add a parent only for sub-pages.
-    if parent_id is not None:
-        if FreeLinks:
-            parent_title = re.sub('_', ' ', parent_id)
+    if parent_id:
         frontmatter['wiki_parent'] = parent_title
 
     out_fh.write('---\n')
