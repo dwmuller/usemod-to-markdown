@@ -16,7 +16,7 @@ import datetime
 import io
 import re
 import sys
-from os.path import join
+from urllib.parse import urlparse
 
 # Additional packages
 import yaml
@@ -25,7 +25,9 @@ import yaml
 overwrite_outputs = False
 debug_format = False
 supress_msgs = False
-base_url='{{ wiki_base_path }}'
+page_link_suffix = "/"
+page_link_prefix = "../"
+page_links_relative = None
 home_page = 'HomeWiki'
 html_allowed = True  # Markdown target allows embedded HTML
 
@@ -55,7 +57,7 @@ intermap_prefix = ''
 
 def usemod_pages_to_markdown_files(input_dir, output_dir):
 
-    initialize_intermap(input_dir)
+    read_intermap(input_dir)
 
     for letter_dir in (input_dir / 'page').resolve().iterdir():
         if letter_dir.is_dir():
@@ -68,7 +70,7 @@ def usemod_pages_to_markdown_files(input_dir, output_dir):
                         subpage_output_dir.mkdir(parents=True, exist_ok=True)
                         convert_page_file(subpage_item, subpage_output_dir)
 
-def initialize_intermap(input_dir):
+def read_intermap(input_dir):
     global intermap
     global intermap_prefix
     intermap = {}
@@ -77,10 +79,35 @@ def initialize_intermap(input_dir):
             key, url = line.strip().split(' ', 1)
             intermap[key] = url
     if not 'LocalWiki' in intermap:
-        intermap['LocalWiki'] = base_url;
+        intermap['LocalWiki'] = page_link_prefix
     if not 'Local' in intermap:
-        intermap['Local'] = base_url;
+        intermap['Local'] = page_link_prefix
     intermap_prefix = f'(P<intermap_key>{"|".join(intermap)}):'
+
+def read_config(file):
+    items = [
+        "UseSubpage",
+        "FreeUpper",
+        "RawHtml",
+        "HtmlTags",
+        "HtmlLinks",
+        "FreeLinks",
+        "SimpleLinks",
+        "NetworkFile",
+        "BracketText",
+        "WikiLinks",
+        "BracketWiki",
+        "UseHeadings"
+    ]
+    with open(file) as fh:
+        for line in fh:
+            m = re.match(rf'\$({"|".join(items)})\s*=\s*("?)(.*?);\2', line)
+            if m:
+                option = m[1]
+                value = m[3]
+                # All the options we use right now are Boolean, making this
+                # rather simple.
+                globals()[option] = value == "1"
 
 def convert_page_file(file, output_dir):
     if not supress_msgs: print (f'Converting file {file}')
@@ -124,9 +151,10 @@ def usemod_data_to_dictionary(buf, fs):
 
 def write_post(out_fh, parent_id, page_id, dt, txt):
     page_title = page_id.replace('_',' ') if FreeLinks else page_id
-    frontmatter = {'title': page_title,
-                   'date': dt.isoformat()
-                  }
+    frontmatter = {
+        'title': page_title,
+        'date': dt.isoformat()
+    }
     # We add a parent only for sub-pages.
     if parent_id is not None:
         if FreeLinks:
@@ -146,7 +174,7 @@ def write_post(out_fh, parent_id, page_id, dt, txt):
 
 ## Tags allowed if HtmlTags is true. Not particularly safe.
 html_single_pattern = 'br|p|hr|li|dt|dd|tr|td|th'
-html_pairs_pattern = html_single_pattern + 'b|i|u|font|big|small|sub|sup|h1|h2|h3|h4|h5|h6|cite|code|em|s|strike|strong|tt|var|div|center|blockquote|ol|ul|dl|table|caption'
+html_pairs_pattern = html_single_pattern + '|b|i|u|font|big|small|sub|sup|h1|h2|h3|h4|h5|h6|cite|code|em|s|strike|strong|tt|var|div|center|blockquote|ol|ul|dl|table|caption'
 
 ## Link patterns
 free_link_pattern = None
@@ -222,13 +250,6 @@ def usemod_page_to_markdown(text, page_id, parent_id):
     last_chunk_index = -1
     saved_markdown_chunks = []
 
-    # Determine the id of the page to use as an implicit parent of subpages.
-    # UseMod has a one-level hierarchy. If this page is a subpage, then 
-    # pages referenced with a leading / are siblings, otherwise they are
-    # subpages of this page.
-    if parent_id is None:
-        parent_id = page_id
-
     def make_marker(n):
         return f'{FS}{n}{FS}'
 
@@ -298,7 +319,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         # the naked HTML.
         return store_markdown_link(m[0])
     def transform_free_link(m):
-        # [[PageRef]], [[PageRef link_text]]
+        # [[PageRef]], [[PageRef text]]
         nonlocal parent_id
         page_ref = m[1]
         link_text = m[2] if m.lastindex > 1 else None
@@ -310,10 +331,10 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         # trim extra spaces
         page_ref = page_ref.strip()
         page_ref = re.sub(r'\s*/\s*','/', page_ref) # around subpage delim
-        url, link_text = get_link_parts(page_ref, None, link_text, parent_id)
+        url, link_text = page_ref_to_link_parts(page_ref, None, link_text, page_id, parent_id)
         return store_markdown_link(url, link_text)
     def transform_bracket_url(m):
-        # [url], [url link_text]
+        # [url], [url text]
         url = m[1]
         link_text = m[2] if m.lastindex > 1 else None
         if debug_format: print(f'!bracket_url("{url}", "{link_text}")')
@@ -323,6 +344,7 @@ def usemod_page_to_markdown(text, page_id, parent_id):
             link_text = f'[{link_text.strip()}]'
         return store_markdown_link(url, link_text)
     def transform_bracket_interlink(m):
+        # [InterSite:path], [InterSite:path text]
         interlink = m[1]
         link_text = m[2] if m.lastindex > 1 else None
         if debug_format: print(f'!interlink("{interlink}","{link_text}")')
@@ -335,20 +357,23 @@ def usemod_page_to_markdown(text, page_id, parent_id):
             link_text = f'[{link_text.strip()}]'
         return store_markdown_link(url, link_text)
     def transform_bracket_link(m):
+        # [PageRef], [PageRef text]
         page_ref = m[1]
         link_text = m[2]
         if debug_format: print(f'!bracket_link("{page_ref}", "{link_text}")')
-        url, link_text = get_link_parts(page_ref, None, f'[{link_text}]', parent_id)
+        url, link_text = page_ref_to_link_parts(page_ref, None, f'[{link_text}]', page_id, parent_id)
         return store_markdown_link(url, link_text)
     def transform_bracket_anchored_link(m):
+        #  [PageRef#anchor], [PageRef#anchor text]
         nonlocal parent_id
         page_ref = m[1]
         anchor = m[2]
         link_text = m[3] if m.lastindex > 1 else None
         if debug_format: print(f'!bracket_anchored_link("{page_ref}", "{anchor}", "{link_text}")')
-        url, link_text = get_link_parts(page_ref, anchor, f'[{link_text}]', parent_id)
+        url, link_text = page_ref_to_link_parts(page_ref, anchor, f'[{link_text}]', page_id, parent_id)
         return store_markdown_link(url, link_text)
     def transform_naked_interlink(m):
+        # InterSite:path
         interlink = m[1]
         if debug_format: print(f'!naked_interlink("{interlink}")')
         interlink, extra = split_url_punct(interlink)
@@ -359,22 +384,25 @@ def usemod_page_to_markdown(text, page_id, parent_id):
         link_text = id
         return store_link_or_image(interlink, link_text) + extra
     def transform_naked_url(m):
+        # url
         url = m[1]
         if debug_format: print(f'!naked_url("{url}")')
         url, extra = split_url_punct(url)
         return store_link_or_image(url) + extra
     def transform_anchored_link(m):
+        # PageRef#anchor
         nonlocal parent_id
-        link = m[1]
+        page_ref = m[1]
         anchor = m[2]
-        if debug_format: print(f'!anchored_link("{link}","{anchor}")')
-        url, link_text = get_link_parts(link, anchor, None, parent_id)
+        if debug_format: print(f'!anchored_link("{page_ref}","{anchor}")')
+        url, link_text = page_ref_to_link_parts(page_ref, anchor, None, page_id, parent_id)
         return store_markdown_link(url, link_text)
     def transform_naked_link(m):
+        # PageRef
         nonlocal parent_id
-        link = m[1]
-        if debug_format: print(f'!naked_link("{link}")')
-        url, link_text = get_link_parts(link, None, None, parent_id)
+        page_ref = m[1]
+        if debug_format: print(f'!naked_link("{page_ref}")')
+        url, link_text = page_ref_to_link_parts(page_ref, None, None, page_id, parent_id)
         return store_markdown_link(url, link_text)
 
 
@@ -401,18 +429,20 @@ def usemod_page_to_markdown(text, page_id, parent_id):
 
     # Now translate allowed HTML tags back to unquoted HTML.
     if HtmlTags:
-        text = re.sub(rf'&lt;({html_pairs_pattern})(\s.*?)&gt;(.*?)&lt;/\1%gt;', r'<\1\2>\3</\1>', text)
-        text = re.sub(rf'&lt;({html_single_pattern})(\s.*?)?/?&gt;', r'<\1\2>', text)
+        text = re.sub(rf'&lt;({html_pairs_pattern})(\s.*?)?&gt;(.*?)&lt;/\1&gt;', r'<\1\2>\3</\1>', text, flags=re.I)
+        text = re.sub(rf'&lt;({html_single_pattern})(\s.*?)?/?&gt;', r'<\1\2>', text, flags=re.I)
     else:
         # These markup tags are always supported:
-        text = re.sub(f'(b|i|strong|em)(\s.*?)&gt;(.*?)&lt;/\1%gt;', r'<\1\2>', text)
+        text = re.sub(rf'&lt;(b|i|strong|em)(\s.*?)?&gt;(.*?)&lt;/\1&gt;', r'<\1\2>\3</\1>', text, flags=re.I)
 
     # Not implemented here: <tt>
 
     # Line breaks.
     #
-    # Standard Markdown uses two trailing spaces, which is nuts.
-    # Most processors accept HTML-style breaks.
+    # Standard Markdown uses two trailing spaces, which is nuts because they're
+    # so easy to miss in an editor - and some editor configuration will
+    # automatically remove them. Most processors accept HTML-style breaks, so
+    # use those instead.
     text = re.sub(r'&lt;br\s*/?&gt;', r'<br>', text)
 
     if HtmlLinks:
@@ -665,21 +695,31 @@ def split_url_punct(url):
     punct = '' if m.lastindex < 2 else m[2]
     return m[1], punct
 
-def get_link_parts(page_ref, anchor, link_text, parent_id):
+def page_ref_to_link_parts(page_ref, anchor, link_text, page_id, parent_id):
     if link_text is None:
         if FreeLinks:
             link_text = page_ref.replace("_"," ")
         else:
             link_text = page_ref
 
-    page_ref = re.sub('^/', f'{parent_id}/', page_ref)
     if FreeLinks:
         page_ref = free_to_normal(page_ref)
     if anchor is not None:
         page_ref = f'{page_ref}#{anchor}'
         link_text = f'{link_text}#{anchor}'
-    # We generate links using a site-wide prefix, and trailing slashes.
-    url = f'{base_url}{page_ref}/'
+
+    # If the reference is to a sub-page with an implicit parent,
+    # prepend the proper parent's id. That's either the current page's id,
+    # or its parent's id if it's a sub-page.
+    page_ref = re.sub('^/', f'{parent_id if parent_id else page_id}/', page_ref)
+
+    # If the current page is a sub-page and we are generating relative links,
+    # navigate up one step.
+    if page_links_relative and parent_id:
+        page_ref = f'../{page_ref}'
+
+    # We generate links using a site-wide prefix and suffix.
+    url = f'{page_link_prefix}{page_ref}{page_link_suffix}'
     return (url, link_text)
 
 def get_interlink_url(interlink):
@@ -708,23 +748,24 @@ def free_to_normal(title):
         title = re.sub(r'([-_.,\(\)/])([a-z])', lambda m: m[1] + m[2].capitalize(), title)
     return title
 
-def print_usage():
-    print('Usage:')
-    print('./usemod_to_markdown <usemod-data-dir> <output-dir>')
-    print('./usemod_to_markdown <usemod-page-file> <output-dir>')
-    print('The second form converts one file and prints debug information.')
-
 import argparse
 import pathlib
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Convert UseMod wiki pages to Markdown.')
+    parser = argparse.ArgumentParser(
+        description='Convert UseMod wiki pages to Markdown.',
+        epilog="""
+            Converting a single file does not provide reliable conversion, and
+            is mostly useful for debugging.""")
     parser.add_argument('input', type=pathlib.Path, help='UseMod data directory, or a single UseMod page file.')
-    parser.add_argument('output_dir', type=pathlib.Path, help='Output directory, created if missing.', nargs='?')
+    parser.add_argument('output_dir', type=pathlib.Path, help='Output directory, created if missing. Required with directory input, disallowed with single-file input.', nargs='?')
     parser.add_argument('--debug', help='Generate debug output.', action='store_true')
     parser.add_argument('--silent', help='Suppress progress messages.', action='store_true')
     parser.add_argument('--overwrite', help='Overwrite existing output file(s).', action='store_true')
-
+    parser.add_argument('--page-link-suffix', help='Suffix for all page link URLs.', default=page_link_suffix)
+    parser.add_argument('--page-link-prefix', help='Prefix for all page link URLs.', default=page_link_prefix)
+    parser.add_argument('--page-links', help='Indicates if page links will be absolute or relative. If relative, implicit sibling links from sub-pages get an extra "../" prefix.', choices=['rel','abs'])
+    parser.add_argument('--config-file', help='Overrides location of UseMod config file, or provides it for a single-file conversion.')
     args = parser.parse_args()
 
     input = args.input
@@ -732,6 +773,19 @@ if __name__ == "__main__":
     overwrite_outputs = args.overwrite
     debug_format = args.debug
     supress_msgs = args.silent
+    page_link_suffix = args.page_link_suffix
+    page_link_prefix = args.page_link_prefix
+    if not args.page_links:
+        url_parts = urlparse(page_link_prefix)
+        if (url_parts.path and url_parts.path.startswith("/")):
+            page_links_relative = False
+        else:
+            page_links_relative = True
+        if not supress_msgs: print(f'Inferred --page-links-relative={page_links_relative}') 
+    elif args.page_links == "rel":
+        page_links_relative = True
+    elif args.page_links == "abs":
+        page_links_relative = False
 
     init_link_patterns()
 
@@ -739,14 +793,24 @@ if __name__ == "__main__":
 
     if input.is_file():
         if not supress_msgs: print(f'Assuming input file {input} is a page file.')
-        convert_page_file(input, output_dir)
+        if output_dir:
+            sys.exit('You may not specify an output when converting a single file.')
+        if args.config_file:
+            read_config(args.config_file)
+        else:
+            print('WARNING: No config file specified.')
+        convert_page_file(input, None)
     else:
         if not input.is_dir():
-            sys.exit('UseMod wiki db directory not found')
+            sys.exit('UseMod wiki db directory not found.')
         if not (input / 'page').exists():
-            sys.exit('UseMod page directory not found')
+            sys.exit('UseMod page directory not found.')
         if output_dir is not None:
             output_dir.mkdir(exist_ok=True)
+        if args.config_file:
+            read_config(args.config_file)
+        else:
+            read_config((input / "config").resolve())
         usemod_pages_to_markdown_files(input, output_dir)
 
 
